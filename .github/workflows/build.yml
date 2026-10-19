@@ -1,12 +1,9 @@
-name: Build and Release APK
+name: Build and Upload APK
 
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
-
-permissions:
-  contents: write
 
 jobs:
   build:
@@ -32,11 +29,8 @@ jobs:
       - name: Build APK
         run: flutter build apk --release
 
-      - name: Release APK
-        uses: softprops/action-gh-release@v2
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: v1.0.0
-          name: ERFAN VPN Release
-          files: build/app/outputs/flutter-apk/app-release.apk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: ERFAN-VPN-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
