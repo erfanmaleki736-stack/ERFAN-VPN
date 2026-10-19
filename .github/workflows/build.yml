@@ -1,0 +1,516 @@
+name: Build ERFAN VPN
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Create project
+        run: flutter create --org com.erfan --project-name erfan --platforms=android app
+
+      - name: Write app code
+        run: |
+          rm -rf app/test
+          mkdir -p app/shaders
+          cat > app/lib/main.dart <<'DART_EOF'
+          import 'dart:async';
+          import 'dart:convert';
+          import 'dart:math' as math;
+          import 'dart:ui' as ui;
+
+          import 'package:flutter/material.dart';
+          import 'package:flutter/services.dart';
+          import 'package:flutter_v2ray/flutter_v2ray.dart';
+          import 'package:google_fonts/google_fonts.dart';
+          import 'package:http/http.dart' as http;
+          import 'package:mobile_scanner/mobile_scanner.dart';
+          import 'package:shared_preferences/shared_preferences.dart';
+
+          const appName = 'ERFAN VPN';
+          const cAccent = Color(0xFF8EDDF0);
+          const cCard = Color(0xFF1E1E20);
+          const cSelected = Color(0xFF35505A);
+          const cPanel = Color(0xFF3A3A3C);
+          final cCardA = cCard.withOpacity(0.93);
+
+          final ValueNotifier<String> langPref = ValueNotifier<String>('auto');
+
+          bool get isFa {
+            final p = langPref.value;
+            if (p == 'fa') return true;
+            if (p == 'en') return false;
+            return WidgetsBinding.instance.platformDispatcher.locale.languageCode == 'fa';
+          }
+
+          String tr(String fa, String en) => isFa ? fa : en;
+
+          class AppSettings {
+            String lang = 'auto';
+            int bg = 0;
+            bool autoBest = true;
+            bool autoSwitch = true;
+            bool autoUpdate = true;
+            String ua = 'v2rayNG/1.8.5';
+            bool proxyOnly = false;
+            bool bypassLan = false;
+            String dnsPreset = 'default';
+            String dnsCustom = '';
+            String domainStrategy = 'default';
+            bool bypassIr = false;
+            String directDomains = '';
+            String blockDomains = '';
+            String deviceId = '';
+
+            Map<String, dynamic> toMap() => {
+                  'lang': lang,
+                  'bg': bg,
+                  'autoBest': autoBest,
+                  'autoSwitch': autoSwitch,
+                  'autoUpdate': autoUpdate,
+                  'ua': ua,
+                  'proxyOnly': proxyOnly,
+                  'bypassLan': bypassLan,
+                  'dnsPreset': dnsPreset,
+                  'dnsCustom': dnsCustom,
+                  'domainStrategy': domainStrategy,
+                  'bypassIr': bypassIr,
+                  'directDomains': directDomains,
+                  'blockDomains': blockDomains,
+                  'deviceId': deviceId,
+                };
+
+            Future<void> load() async {
+              final p = await SharedPreferences.getInstance();
+              final raw = p.getString('settings');
+              if (raw != null) {
+                try {
+                  final m = jsonDecode(raw) as Map<String, dynamic>;
+                  lang = (m['lang'] ?? lang) as String;
+                  bg = (m['bg'] ?? bg) as int;
+                  autoBest = (m['autoBest'] ?? autoBest) as bool;
+                  autoSwitch = (m['autoSwitch'] ?? autoSwitch) as bool;
+                  autoUpdate = (m['autoUpdate'] ?? autoUpdate) as bool;
+                  ua = (m['ua'] ?? ua) as String;
+                  proxyOnly = (m['proxyOnly'] ?? proxyOnly) as bool;
+                  bypassLan = (m['bypassLan'] ?? bypassLan) as bool;
+                  dnsPreset = (m['dnsPreset'] ?? dnsPreset) as String;
+                  dnsCustom = (m['dnsCustom'] ?? dnsCustom) as String;
+                  domainStrategy = (m['domainStrategy'] ?? domainStrategy) as String;
+                  bypassIr = (m['bypassIr'] ?? bypassIr) as bool;
+                  directDomains = (m['directDomains'] ?? directDomains) as String;
+                  blockDomains = (m['blockDomains'] ?? blockDomains) as String;
+                  deviceId = (m['deviceId'] ?? deviceId) as String;
+                } catch (_) {}
+              }
+              if (bg < 0 || bg > 3) bg = 0;
+              if (deviceId.isEmpty) {
+                deviceId = _uuid();
+                await save();
+              }
+              langPref.value = lang;
+            }
+
+            Future<void> save() async {
+              final p = await SharedPreferences.getInstance();
+              await p.setString('settings', jsonEncode(toMap()));
+            }
+
+            List<String> listOf(String s) => s
+                .split(RegExp(r'[,\s]+'))
+                .map((e) => e.trim().toLowerCase())
+                .where((e) => e.isNotEmpty)
+                .toList();
+
+            List<String> dnsServers() {
+              switch (dnsPreset) {
+                case 'google':
+                  return ['8.8.8.8', '8.8.4.4'];
+                case 'cloudflare':
+                  return ['1.1.1.1', '1.0.0.1'];
+                case 'quad9':
+                  return ['9.9.9.9', '149.112.112.112'];
+                case 'adguard':
+                  return ['94.140.14.14', '94.140.15.15'];
+                case 'custom':
+                  return dnsCustom
+                      .split(RegExp(r'[,\s]+'))
+                      .map((e) => e.trim())
+                      .where((e) => e.isNotEmpty)
+                      .toList();
+                default:
+                  return [];
+              }
+            }
+          }
+
+          final AppSettings S = AppSettings();
+
+          String _uuid() {
+            final r = math.Random.secure();
+            final b = List<int>.generate(16, (_) => r.nextInt(256));
+            b[6] = (b[6] & 0x0f) | 0x40;
+            b[8] = (b[8] & 0x3f) | 0x80;
+            String h(int i) => b[i].toRadixString(16).padLeft(2, '0');
+            return '${h(0)}${h(1)}${h(2)}${h(3)}-${h(4)}${h(5)}-${h(6)}${h(7)}-${h(8)}${h(9)}-${h(10)}${h(11)}${h(12)}${h(13)}${h(14)}${h(15)}';
+          }
+
+          Future<void> main() async {
+            WidgetsFlutterBinding.ensureInitialized();
+            await S.load();
+            runApp(const ErfanApp());
+          }
+
+          class ErfanApp extends StatelessWidget {
+            const ErfanApp({super.key});
+
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                title: appName,
+                debugShowCheckedModeBanner: false,
+                theme: ThemeData(
+                  useMaterial3: true,
+                  brightness: Brightness.dark,
+                  colorScheme: ColorScheme.fromSeed(
+                      seedColor: cAccent, brightness: Brightness.dark),
+                  scaffoldBackgroundColor: Colors.transparent,
+                ),
+                builder: (context, child) => ValueListenableBuilder<String>(
+                  valueListenable: langPref,
+                  builder: (_, __, ___) => Directionality(
+                    textDirection: isFa ? TextDirection.rtl : TextDirection.ltr,
+                    child: child!,
+                  ),
+                ),
+                home: const HomePage(),
+              );
+            }
+          }
+
+          class Cfg {
+            final String link;
+            final String? sub;
+            Cfg(this.link, this.sub);
+
+            bool get isJson => link.startsWith('{');
+
+            Map<String, dynamic> toJson() => {'l': link, 's': sub};
+            factory Cfg.fromJson(Map<String, dynamic> j) =>
+                Cfg(j['l'] as String, j['s'] as String?);
+          }
+
+          class SubInfo {
+            String name;
+            int used;
+            int total;
+            int expire;
+            SubInfo({this.name = '', this.used = 0, this.total = 0, this.expire = 0});
+
+            Map<String, dynamic> toJson() =>
+                {'n': name, 'u': used, 't': total, 'e': expire};
+            factory SubInfo.fromJson(Map<String, dynamic> j) => SubInfo(
+                  name: (j['n'] ?? '') as String,
+                  used: (j['u'] ?? 0) as int,
+                  total: (j['t'] ?? 0) as int,
+                  expire: (j['e'] ?? 0) as int,
+                );
+          }
+
+          class CfgGroup {
+            final String? sub;
+            final String title;
+            final List<Cfg> items;
+            CfgGroup(this.sub, this.title, this.items);
+          }
+
+          class SubRow {
+            final String title;
+            final int count;
+            final int used;
+            final int total;
+            final int expire;
+            SubRow(this.title, this.count, this.used, this.total, this.expire);
+          }
+
+          String _gb(int b) => '${(b / 1073741824).toStringAsFixed(1)} GB';
+
+          int? _daysLeft(int expire) {
+            if (expire <= 0) return null;
+            final ms = expire * 1000 - DateTime.now().millisecondsSinceEpoch;
+            return (ms / 86400000).ceil();
+          }
+
+          class HomePage extends StatefulWidget {
+            const HomePage({super.key});
+
+            @override
+            State<HomePage> createState() => _HomePageState();
+          }
+
+          class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
+            late final FlutterV2ray _v2ray;
+            V2RayStatus _status = V2RayStatus();
+
+            int _tab = 1;
+
+            List<Cfg> _configs = [];
+            List<String> _subs = [];
+            final Map<String, SubInfo> _subInfo = {};
+            final Map<String, int> _pings = {};
+            final Map<String, String> _names = {};
+            final Map<String, String> _hosts = {};
+            final Map<String, String> _custom = {};
+            final Set<String> _collapsed = {};
+            final Set<String> _busyPing = {};
+            final Set<String> _busyUpd = {};
+            List<Object> _rows = [];
+            String? _selected;
+            int _sort = 0;
+
+            bool _updatingSubs = false;
+            bool _pinging = false;
+            bool _foreground = true;
+            bool _firstRound = true;
+            int _failRounds = 0;
+            DateTime _lastSubUpdate = DateTime.fromMillisecondsSinceEpoch(0);
+            Timer? _pingTimer;
+
+            bool get _connected => _status.state == 'CONNECTED';
+            bool get _connecting => _status.state == 'CONNECTING';
+
+            static const _prefixes = [
+              'vmess://',
+              'vless://',
+              'trojan://',
+              'ss://',
+              'socks://',
+            ];
+            bool _isLink(String s) => _prefixes.any(s.startsWith);
+
+            @override
+            void initState() {
+              super.initState();
+              WidgetsBinding.instance.addObserver(this);
+              langPref.addListener(_onLang);
+              _v2ray = FlutterV2ray(onStatusChanged: (s) {
+                if (mounted) setState(() => _status = s);
+              });
+              _init();
+            }
+
+            void _onLang() {
+              if (mounted) setState(() {});
+            }
+
+            @override
+            void dispose() {
+              WidgetsBinding.instance.removeObserver(this);
+              langPref.removeListener(_onLang);
+              _pingTimer?.cancel();
+              super.dispose();
+            }
+
+            @override
+            void didChangeAppLifecycleState(AppLifecycleState state) {
+              if (state == AppLifecycleState.resumed) {
+                _foreground = true;
+                if (S.autoUpdate &&
+                    DateTime.now().difference(_lastSubUpdate).inSeconds > 30) {
+                  _updateAllSubs();
+                } else {
+                  _pingAll();
+                }
+              } else if (state == AppLifecycleState.paused) {
+                _foreground = false;
+              }
+            }
+
+            Future<void> _init() async {
+              await _v2ray.initializeV2Ray();
+              await _load();
+
+              if (_subs.isNotEmpty && S.autoUpdate) {
+                await _updateAllSubs();
+              } else {
+                _pingAll();
+              }
+
+              _pingTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+                if (_foreground) _pingAll();
+              });
+            }
+
+            Future<void> _load() async {
+              final p = await SharedPreferences.getInstance();
+              List<Cfg> list = [];
+              final raw = p.getString('configs');
+              if (raw != null) {
+                try {
+                  list = (jsonDecode(raw) as List)
+                      .map((e) => Cfg.fromJson(e as Map<String, dynamic>))
+                      .toList();
+                } catch (_) {}
+              }
+              final infoRaw = p.getString('subinfo');
+              if (infoRaw != null) {
+                try {
+                  final m = jsonDecode(infoRaw) as Map<String, dynamic>;
+                  m.forEach((k, v) {
+                    _subInfo[k] = SubInfo.fromJson(Map<String, dynamic>.from(v as Map));
+                  });
+                } catch (_) {}
+              }
+              final custRaw = p.getString('custom');
+              if (custRaw != null) {
+                try {
+                  final m = jsonDecode(custRaw) as Map<String, dynamic>;
+                  m.forEach((k, v) => _custom[k] = v.toString());
+                } catch (_) {}
+              }
+              if (!mounted) return;
+              setState(() {
+                _configs = list;
+                _subs = p.getStringList('subs') ?? [];
+                _selected = p.getString('selected');
+                _sort = p.getInt('sort') ?? 0;
+                _resort();
+              });
+            }
+
+            Future<void> _save() async {
+              final p = await SharedPreferences.getInstance();
+              await p.setString(
+                  'configs', jsonEncode(_configs.map((e) => e.toJson()).toList()));
+              await p.setStringList('subs', _subs);
+              await p.setString('subinfo',
+                  jsonEncode(_subInfo.map((k, v) => MapEntry(k, v.toJson()))));
+              await p.setString('custom', jsonEncode(_custom));
+              await p.setInt('sort', _sort);
+              if (_selected != null) {
+                await p.setString('selected', _selected!);
+              } else {
+                await p.remove('selected');
+              }
+            }
+
+            void _toast(String msg) {
+              if (!mounted) return;
+              ScaffoldMessenger.of(context)
+                ..hideCurrentSnackBar()
+                ..showSnackBar(SnackBar(content: Text(msg)));
+            }
+
+            String _nameOf(Cfg c) {
+              final cu = _custom[c.link];
+              if (cu != null && cu.isNotEmpty) return cu;
+              return _names.putIfAbsent(c.link, () {
+                if (c.isJson) {
+                  try {
+                    final j = jsonDecode(c.link);
+                    if (j is Map && j['remarks'] != null) return j['remarks'].toString();
+                  } catch (_) {}
+                  return 'JSON';
+                }
+                try {
+                  final r = FlutterV2ray.parseFromURL(c.link).remark;
+                  return r.isEmpty ? '—' : r;
+                } catch (_) {
+                  return '—';
+                }
+              });
+            }
+
+            String _rawHost(Cfg c) {
+              try {
+                if (c.isJson) {
+                  final j = jsonDecode(c.link);
+                  if (j is Map) {
+                    final ob = j['outbounds'];
+                    if (ob is List && ob.isNotEmpty) {
+                      final s = ob[0]['settings'];
+                      if (s is Map) {
+                        final v = s['vnext'];
+                        if (v is List && v.isNotEmpty) {
+                          return (v[0]['address'] ?? '').toString();
+                        }
+                        final sv = s['servers'];
+                        if (sv is List && sv.isNotEmpty) {
+                          return (sv[0]['address'] ?? '').toString();
+                        }
+                      }
+                    }
+                  }
+                  return '';
+                }
+                if (c.link.startsWith('vmess://')) {
+                  final raw = c.link.substring(8).split('#').first;
+                  final j = jsonDecode(utf8.decode(base64.decode(base64.normalize(raw))));
+                  return (j['add'] ?? '').toString();
+                }
+                if (c.link.startsWith('ss://')) {
+                  final u = Uri.tryParse(c.link);
+                  if (u != null && u.host.isNotEmpty) return u.host;
+                  final body = c.link.substring(5).split('#').first;
+                  final dec = utf8.decode(base64.decode(base64.normalize(body)));
+                  final at = dec.lastIndexOf('@');
+                  if (at >= 0) return dec.substring(at + 1).split(':').first;
+                  return '';
+                }
+                return Uri.tryParse(c.link)?.host ?? '';
+              } catch (_) {
+                return '';
+              }
+            }
+
+            String _hostOf(Cfg c) => _hosts.putIfAbsent(c.link, () {
+                  final h = _rawHost(c);
+                  if (h.length <= 8) return h;
+                  return '${h.substring(0, 4)}****${h.substring(h.length - 4)}';
+                });
+
+            String _fullConfig(Cfg c) => c.isJson
+                ? c.link
+                : FlutterV2ray.parseFromURL(c.link).getFullConfiguration();
+
+            String _buildConfig(Cfg c) {
+              final base = _fullConfig(c);
+              final needsDns = !c.isJson && S.dnsPreset != 'default';
+              final needsRoute = S.domainStrategy != 'default' ||
+                  S.bypassIr ||
+                  S.directDomains.trim().isNotEmpty ||
+                  S.blockDomains.trim().isNotEmpty;
+              if (!needsDns && !needsRoute) return base;
+              try {
+                final decoded = jsonDecode(base);
+                if (decoded is! Map) return base;
+                final m = Map<String, dynamic>.from(decoded);
+                if (needsDns) {
+                  final servers = S.dnsServers();
+                  if (servers.isNotEmpty) m['dns'] = {'servers': servers};
+                }
+                if (needsRoute) {
+                  final outs = (m['outbounds'] is List)
+                      ? List<dynamic>.from(m['outbounds'] as List)
+                      : <dynamic>[];
+                  bool hasTag(String t) => outs.any((o) => o is Map && o['tag'] == t);
+                  final routing = (m['routing'] is Map)
+                      ? Map<String, dynamic>.from(m['routing'] as Map)
+                      : <String, dynamic>{};
+                  final rules = (routing['rules'] is List)
+                      ? List<dynamic>.from(routing['rules'] as List)
+                      : <dynamic>[];
+                  final front = <dynamic>[];
+                  final direct = <String>[
+                    ...S.listOf(S.directDomains).
